@@ -1,13 +1,15 @@
 package main
 
 import (
+	"github.com/gorilla/websocket"
 	"log"
 	"net/http"
 	"sync"
 	"time"
-
-	"github.com/gorilla/websocket"
 )
+
+// tokenExpiryBuffer is how far before actual expiry we consider a CopilotToken expired to avoid races
+const tokenExpiryBuffer = 10 * time.Second
 
 type DeviceCodeResponse struct {
 	DeviceCode      string `json:"device_code"`
@@ -45,6 +47,7 @@ func (tc *TokenCache) Set(key string, token CopilotToken) {
 	tc.mu.Lock()
 	tc.cache[key] = token
 	tc.mu.Unlock()
+	// schedule a cleanup taking into account our expiry buffer
 	tc.scheduleCleanup()
 }
 
@@ -52,7 +55,8 @@ func (tc *TokenCache) Get(key string) (CopilotToken, bool) {
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
 	token, ok := tc.cache[key]
-	if !ok || int64(token.Expiry) <= time.Now().Unix() {
+	// treat tokens as expired tokenExpiryBuffer before their actual expiry to avoid races
+	if !ok || time.Until(time.Unix(token.Expiry, 0)) <= tokenExpiryBuffer {
 		delete(tc.cache, key)
 		return CopilotToken{}, false
 	}
@@ -67,22 +71,22 @@ func (tc *TokenCache) scheduleCleanup() {
 		tc.timer.Stop()
 	}
 
-	var earliest int64 = 0
+	var earliestEvict time.Time
 	for _, v := range tc.cache {
-		if earliest == 0 || v.Expiry < earliest {
-			earliest = v.Expiry
+		// schedule eviction tokenExpiryBuffer before actual expiry
+		evict := time.Unix(v.Expiry, 0).Add(-tokenExpiryBuffer)
+		if earliestEvict.IsZero() || evict.Before(earliestEvict) {
+			earliestEvict = evict
 		}
 	}
-
-	if earliest == 0 {
+	if earliestEvict.IsZero() {
 		return
 	}
-
-	duration := time.Until(time.Unix(earliest, 0))
+	// compute duration until eviction time
+	duration := time.Until(earliestEvict)
 	if duration <= 0 {
 		duration = time.Second
 	}
-
 	tc.timer = time.AfterFunc(duration, func() {
 		tc.cleanup()
 	})
