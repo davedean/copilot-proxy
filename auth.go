@@ -63,7 +63,6 @@ func pollAccessToken(deviceCode string) (AccessTokenResponse, error) {
 		log.Println("No access token found")
 		return AccessTokenResponse{}, errors.New("no access token")
 	}
-	log.Printf("Got access token, %s", at.AccessToken)
 	return at, nil
 }
 

@@ -1,4 +1,4 @@
-# GitHub Copilot Proxy
+# Copilot Chat Proxy
 
 A simple proxy that lets you use GitHub Copilot Chat with OpenAI-compatible tools.
 
@@ -11,9 +11,9 @@ Usage:
 
 To use with OpenAI Codex
 
-```
+```bash
 export COPILOT_API_KEY="<your token>"
-export COPILOT_BASE_URL="http://127.0.0.1:8080
+export COPILOT_BASE_URL="http://127.0.0.1:8080"
 codex --provider copilot
 ```
 
@@ -22,3 +22,7 @@ codex --provider copilot
 `go run .`
 or
 `go run . -listen 127.0.0.1:8923`
+
+**Don't want to run it yourself?**
+
+I have it hosted on <https://cope.duti.dev>. (Just replace <http://127.0.0.1:8080> in the instructions with that URL)
