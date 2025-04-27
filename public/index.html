@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta
+      charset="UTF-8"
+    >
+    <title>Copilot Proxy Login</title>
+    <style>
+      body {
+        font-family: sans-serif;
+        max-width: 500px;
+        margin: 2em auto;
+      }
+      #token {
+        word-break: break-all;
+        color: green;
+      }
+      #error {
+        color: red;
+      }
+      #login,
+      #poll,
+      #done {
+        display: none;
+      }
+      button {
+        padding: 0.5em 1em;
+      }
+    </style>
+  </head>
+  <body>
+    <h2>GitHub Copilot Proxy Login</h2>
+    <div id="start">
+      <button id="loginBtn">Login with GitHub</button>
+    </div>
+    <div id="login">
+      <p>
+        Visit
+        <a id="verifyUri" href="#" target="_blank"></a>
+        and enter code:
+        <b id="userCode"></b>
+      </p>
+      <button id="startPoll">Continue</button>
+    </div>
+    <div id="poll">
+      <p>Waiting for authentication...</p>
+      <div id="error"></div>
+    </div>
+    <div id="done">
+      <p>Your access token (API key):</p>
+      <div id="token"></div>
+      <p>
+        Use this as
+        <code>Authorization: Bearer &lt;token&gt;</code>
+        for /chat/completions.
+      </p>
+    </div>
+    <script>
+      let deviceCode, interval;
+      document.getElementById("loginBtn").onclick = async function () {
+        let res = await fetch("/login");
+        let data = await res.json();
+        console.log(data)
+        deviceCode = data.device_code;
+        interval = data.interval;
+        document.getElementById("verifyUri").href = data.verification_uri;
+        document.getElementById("verifyUri").textContent =
+          data.verification_uri;
+        document.getElementById("userCode").textContent = data.user_code;
+        document.getElementById("start").style.display = "none";
+        document.getElementById("login").style.display = "block";
+      };
+      document.getElementById("startPoll").onclick = function () {
+        document.getElementById("login").style.display = "none";
+        document.getElementById("poll").style.display = "block";
+        let ws = new WebSocket(
+          (location.protocol === "https:" ? "wss://" : "ws://") +
+            location.host +
+            "/ws/poll",
+        );
+        ws.onopen = function () {
+          ws.send(
+            JSON.stringify({ device_code: deviceCode, interval: interval }),
+          );
+        };
+        ws.onmessage = function (e) {
+          let data = JSON.parse(e.data);
+          if (data.access_token) {
+            document.getElementById("poll").style.display = "none";
+            document.getElementById("done").style.display = "block";
+            document.getElementById("token").textContent = data.access_token;
+            ws.close();
+          } else if (data.error) {
+            document.getElementById("error").textContent = data.error;
+            ws.close();
+          }
+        };
+        ws.onclose = function () {
+          if (document.getElementById("poll").style.display !== "none") {
+            document.getElementById("error").textContent =
+              "Connection closed or timed out.";
+          }
+        };
+      };
+    </script>
+  </body>
+</html>
