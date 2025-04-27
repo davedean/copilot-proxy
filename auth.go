@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
+	"log"
 	"net/http"
 )
 
@@ -33,6 +35,7 @@ func requestDeviceCode() (DeviceCodeResponse, error) {
 }
 
 func pollAccessToken(deviceCode string) (AccessTokenResponse, error) {
+	log.Println("Polling access token")
 	body := map[string]string{
 		"client_id":   clientID,
 		"device_code": deviceCode,
@@ -47,27 +50,54 @@ func pollAccessToken(deviceCode string) (AccessTokenResponse, error) {
 		return AccessTokenResponse{}, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		log.Printf("%d: Failed to get access token: %s", resp.StatusCode, string(body))
+		return AccessTokenResponse{}, errors.New("Failed to get access token")
+	}
 	var at AccessTokenResponse
 	if err := json.NewDecoder(resp.Body).Decode(&at); err != nil {
 		return AccessTokenResponse{}, err
 	}
 	if at.AccessToken == "" {
+		log.Println("No access token found")
 		return AccessTokenResponse{}, errors.New("no access token")
 	}
+	log.Printf("Got access token, %s", at.AccessToken)
 	return at, nil
 }
 
 func fetchCopilotToken(accessToken string) (CopilotToken, error) {
-	req, _ := http.NewRequest("GET", "https://api.github.com/copilot_internal/v2/token", nil)
+	req, err := http.NewRequest("GET", "https://api.github.com/copilot_internal/v2/token", nil)
+	if err != nil {
+		log.Printf("Failed to create request: %v", err)
+		return CopilotToken{}, err
+	}
 	req.Header.Set("authorization", "token "+accessToken)
 	req.Header.Set("user-agent", "GitHubCopilotChat/0.12.2023120701")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
+		log.Printf("HTTP request failed: %v", err)
 		return CopilotToken{}, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		var errResp struct {
+			Message string `json:"message"`
+		}
+		if decodeErr := json.NewDecoder(resp.Body).Decode(&errResp); decodeErr != nil {
+			log.Printf("Failed to decode error response: %v", decodeErr)
+		}
+		if errResp.Message != "" {
+			log.Printf("API error: %s", errResp.Message)
+			return CopilotToken{}, errors.New(errResp.Message)
+		}
+		log.Printf("Failed to get copilot token: status %d", resp.StatusCode)
+		return CopilotToken{}, errors.New("failed to get copilot token")
+	}
 	var ct CopilotToken
 	if err := json.NewDecoder(resp.Body).Decode(&ct); err != nil {
+		log.Printf("Failed to decode copilot token: %v", err)
 		return CopilotToken{}, err
 	}
 	return ct, nil

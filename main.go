@@ -22,50 +22,82 @@ type AccessTokenResponse struct {
 }
 
 type CopilotToken struct {
-	Token  string    `json:"token"`
-	Expiry time.Time `json:"expiry"`
+	Token  string `json:"token"`
+	Expiry int64  `json:"expires_at"`
 }
-
 type TokenCache struct {
-	mu    sync.Mutex
-	cache map[string]CopilotToken
+	mu       sync.Mutex
+	cache    map[string]CopilotToken
+	timer    *time.Timer
+	stopChan chan struct{}
 }
 
 func NewTokenCache() *TokenCache {
-	tc := &TokenCache{cache: make(map[string]CopilotToken)}
-	go tc.cleanup()
+	tc := &TokenCache{
+		cache:    make(map[string]CopilotToken),
+		stopChan: make(chan struct{}),
+	}
+	tc.scheduleCleanup()
 	return tc
 }
 
 func (tc *TokenCache) Set(key string, token CopilotToken) {
 	tc.mu.Lock()
-	defer tc.mu.Unlock()
 	tc.cache[key] = token
+	tc.mu.Unlock()
+	tc.scheduleCleanup()
 }
 
 func (tc *TokenCache) Get(key string) (CopilotToken, bool) {
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
 	token, ok := tc.cache[key]
-	if !ok || token.Expiry.Before(time.Now()) {
+	if !ok || int64(token.Expiry) <= time.Now().Unix() {
 		delete(tc.cache, key)
 		return CopilotToken{}, false
 	}
 	return token, true
 }
 
-func (tc *TokenCache) cleanup() {
-	for {
-		time.Sleep(1 * time.Minute)
-		tc.mu.Lock()
-		now := time.Now()
-		for k, v := range tc.cache {
-			if v.Expiry.Before(now) {
-				delete(tc.cache, k)
-			}
-		}
-		tc.mu.Unlock()
+func (tc *TokenCache) scheduleCleanup() {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+
+	if tc.timer != nil {
+		tc.timer.Stop()
 	}
+
+	var earliest int64 = 0
+	for _, v := range tc.cache {
+		if earliest == 0 || v.Expiry < earliest {
+			earliest = v.Expiry
+		}
+	}
+
+	if earliest == 0 {
+		return
+	}
+
+	duration := time.Until(time.Unix(earliest, 0))
+	if duration <= 0 {
+		duration = time.Second
+	}
+
+	tc.timer = time.AfterFunc(duration, func() {
+		tc.cleanup()
+	})
+}
+
+func (tc *TokenCache) cleanup() {
+	tc.mu.Lock()
+	now := time.Now().Unix()
+	for k, v := range tc.cache {
+		if v.Expiry <= now {
+			delete(tc.cache, k)
+		}
+	}
+	tc.mu.Unlock()
+	tc.scheduleCleanup()
 }
 
 var upgrader = websocket.Upgrader{}

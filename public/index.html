@@ -85,6 +85,7 @@
         };
         ws.onmessage = function (e) {
           let data = JSON.parse(e.data);
+          console.log(data)
           if (data.access_token) {
             document.getElementById("poll").style.display = "none";
             document.getElementById("done").style.display = "block";
