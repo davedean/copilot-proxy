@@ -1,11 +1,13 @@
 package main
 
 import (
-	"github.com/gorilla/websocket"
 	"log"
 	"net/http"
+	"os"
 	"sync"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 // tokenExpiryBuffer is how far before actual expiry we consider a CopilotToken expired to avoid races
@@ -108,11 +110,19 @@ var upgrader = websocket.Upgrader{}
 var tokenCache = NewTokenCache()
 
 func main() {
+	listenAddr := "127.0.0.1:8080"
+	if len(os.Args) > 1 {
+		for i, arg := range os.Args {
+			if arg == "-listen" && i+1 < len(os.Args) {
+				listenAddr = os.Args[i+1]
+			}
+		}
+	}
 	http.HandleFunc("/", handleIndex)
 	http.HandleFunc("/login", handleLogin)
 	http.HandleFunc("/ws/poll", handleWebsocketPoll)
 	http.HandleFunc("/chat/completions", handleGitHubProxy)
 	http.HandleFunc("/models", handleGitHubProxy)
-	log.Println("Listening at http://127.0.0.1:8080")
-	log.Fatal(http.ListenAndServe("127.0.0.1:8080", nil))
+	log.Printf("Listening at http://%s\n", listenAddr)
+	log.Fatal(http.ListenAndServe(listenAddr, nil))
 }

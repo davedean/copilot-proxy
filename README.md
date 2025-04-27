@@ -16,3 +16,9 @@ export COPILOT_API_KEY="<your token>"
 export COPILOT_BASE_URL="http://127.0.0.1:8080
 codex --provider copilot
 ```
+
+### Running
+
+`go run .`
+or
+`go run . -listen 127.0.0.1:8923`
