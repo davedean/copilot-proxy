@@ -5,6 +5,7 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -67,8 +68,8 @@ func handleWebsocketPoll(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
-	log.Println("Handling chat completion")
+func handleGitHubProxy(w http.ResponseWriter, r *http.Request) {
+	log.Println("Forwarding GitHub Copilot Request")
 	auth := r.Header.Get("Authorization")
 	if len(auth) < 8 || auth[:7] != "Bearer " {
 		log.Println("403: Missing Authoirzation header")
@@ -90,7 +91,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Forward the request to the Copilot API
-	req, err := http.NewRequest(r.Method, "https://api.githubcopilot.com/chat/completions", r.Body)
+	req, err := http.NewRequest(r.Method, fmt.Sprintf("https://api.githubcopilot.com%s", r.URL.Path), r.Body)
 	if err != nil {
 		http.Error(w, "Failed to create request", http.StatusInternalServerError)
 		return
@@ -129,7 +130,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(resp.StatusCode)
 	io.Copy(w, resp.Body)
-	log.Println("Successfully proxied chat request")
+	log.Println("Copilot Request Completed")
 }
 
 func handleIndex(w http.ResponseWriter, r *http.Request) {

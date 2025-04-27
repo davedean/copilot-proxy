@@ -111,7 +111,8 @@ func main() {
 	http.HandleFunc("/", handleIndex)
 	http.HandleFunc("/login", handleLogin)
 	http.HandleFunc("/ws/poll", handleWebsocketPoll)
-	http.HandleFunc("/chat/completions", handleChatCompletions)
+	http.HandleFunc("/chat/completions", handleGitHubProxy)
+	http.HandleFunc("/models", handleGitHubProxy)
 	log.Println("Listening at http://127.0.0.1:8080")
 	log.Fatal(http.ListenAndServe("127.0.0.1:8080", nil))
 }
