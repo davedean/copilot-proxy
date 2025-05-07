@@ -44,13 +44,52 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// No valid token found, proceed with device code flow
-	log.Println("No valid token found, requesting new device code")
+	// Check if we have a valid cached device code
+	if IsDeviceCodeValid(deviceCodeStorage) {
+		log.Println("Using cached device code to get a fresh access token")
+		at, err := pollAccessToken(deviceCodeStorage.DeviceCode)
+		if err == nil && at.AccessToken != "" {
+			log.Println("Successfully obtained access token using cached device code")
+
+			// Get a fresh Copilot token
+			ct, err := fetchCopilotToken(at.AccessToken)
+			if err == nil {
+				// Store the token in the cache in a separate goroutine to avoid blocking
+				go func() {
+					tokenCache.Set(at.AccessToken, ct)
+				}()
+
+				// Return the access token to the client
+				json.NewEncoder(w).Encode(map[string]string{
+					"access_token": at.AccessToken,
+					"cached":       "device_code",
+				})
+				return
+			} else {
+				log.Printf("Failed to fetch Copilot token: %v", err)
+			}
+		} else {
+			log.Printf("Failed to get access token using cached device code: %v", err)
+		}
+	}
+
+	// No valid token or device code found, proceed with device code flow
+	log.Println("No valid token or device code found, requesting new device code")
 	dc, err := requestDeviceCode()
 	if err != nil {
 		http.Error(w, "Failed to get device code", http.StatusInternalServerError)
 		return
 	}
+
+	// Store the device code in the global variable
+	deviceCodeStorage = DeviceCodeStorage{
+		DeviceCode:      dc.DeviceCode,
+		UserCode:        dc.UserCode,
+		VerificationURI: dc.VerificationURI,
+		Interval:        dc.Interval,
+		CreatedAt:       time.Now().Unix(),
+	}
+
 	json.NewEncoder(w).Encode(dc)
 }
 
@@ -71,6 +110,12 @@ func handleWebsocketPoll(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Println(req.DeviceCode, req.Interval)
 
+	// Update the device code storage with the latest information
+	// This ensures we have the most recent device code for future use
+	deviceCodeStorage.DeviceCode = req.DeviceCode
+	deviceCodeStorage.Interval = req.Interval
+	deviceCodeStorage.CreatedAt = time.Now().Unix()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -86,9 +131,23 @@ func handleWebsocketPoll(w http.ResponseWriter, r *http.Request) {
 			at, err := pollAccessToken(req.DeviceCode)
 			if err == nil && at.AccessToken != "" {
 				conn.WriteJSON(map[string]string{"access_token": at.AccessToken})
+
+				// Save the device code to file for future use
+				if deviceCodeFile := defaultDeviceCodeFile; deviceCodeFile != "" {
+					go func() {
+						if err := SaveDeviceCodeToFile(deviceCodeFile, deviceCodeStorage); err != nil {
+							log.Printf("Failed to save device code to file: %v", err)
+						}
+					}()
+				}
+
+				// Get a fresh Copilot token
 				ct, err := fetchCopilotToken(at.AccessToken)
 				if err == nil {
-					tokenCache.Set(at.AccessToken, ct)
+					// Store the token in the cache in a separate goroutine to avoid blocking
+					go func(accessToken string, copilotToken CopilotToken) {
+						tokenCache.Set(accessToken, copilotToken)
+					}(at.AccessToken, ct)
 				}
 				return
 			}
@@ -115,7 +174,10 @@ func handleGitHubProxy(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusUnauthorized)
 			return
 		}
-		tokenCache.Set(accessToken, ct)
+		// Store the token in the cache in a separate goroutine to avoid blocking
+		go func(accessToken string, copilotToken CopilotToken) {
+			tokenCache.Set(accessToken, copilotToken)
+		}(accessToken, ct)
 	}
 
 	// Forward the request to the Copilot API

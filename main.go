@@ -61,14 +61,21 @@ func NewTokenCache(filename string) *TokenCache {
 func (tc *TokenCache) Set(key string, token CopilotToken) {
 	tc.mu.Lock()
 	tc.cache[key] = token
+
+	// Make a copy of the cache to avoid holding the lock during file I/O
+	cacheCopy := make(map[string]CopilotToken)
+	for k, v := range tc.cache {
+		cacheCopy[k] = v
+	}
+
+	// Get the filename before unlocking
+	filename := tc.filename
 	tc.mu.Unlock()
 
 	// Save to file if filename is set
-	if tc.filename != "" {
+	if filename != "" {
 		go func() {
-			tc.mu.Lock()
-			defer tc.mu.Unlock()
-			if err := SaveTokensToFile(tc.filename, tc.cache); err != nil {
+			if err := SaveTokensToFile(filename, cacheCopy); err != nil {
 				log.Printf("Failed to save tokens to file: %v", err)
 			}
 		}()
@@ -124,20 +131,26 @@ func (tc *TokenCache) cleanup() {
 	now := time.Now().Unix()
 	tokensRemoved := false
 
+	// Make a copy of the cache to avoid holding the lock during file I/O
+	cacheCopy := make(map[string]CopilotToken)
+
 	for k, v := range tc.cache {
 		if v.Expiry <= now {
 			delete(tc.cache, k)
 			tokensRemoved = true
+		} else {
+			cacheCopy[k] = v
 		}
 	}
+
+	// Get the filename before unlocking
+	filename := tc.filename
 	tc.mu.Unlock()
 
 	// If tokens were removed and we have a filename, save the updated cache
-	if tokensRemoved && tc.filename != "" {
+	if tokensRemoved && filename != "" {
 		go func() {
-			tc.mu.Lock()
-			defer tc.mu.Unlock()
-			if err := SaveTokensToFile(tc.filename, tc.cache); err != nil {
+			if err := SaveTokensToFile(filename, cacheCopy); err != nil {
 				log.Printf("Failed to save tokens to file after cleanup: %v", err)
 			}
 		}()
@@ -149,12 +162,17 @@ func (tc *TokenCache) cleanup() {
 var upgrader = websocket.Upgrader{}
 var tokenCache *TokenCache
 
-// Default token storage file path
+// Default storage file paths
 const defaultTokenFile = "copilot_tokens.json"
+const defaultDeviceCodeFile = "device_code.json"
+
+// Global variable for device code storage
+var deviceCodeStorage DeviceCodeStorage
 
 func main() {
 	listenAddr := "127.0.0.1:8080"
 	tokenFile := defaultTokenFile
+	deviceCodeFile := defaultDeviceCodeFile
 	cliOnly := false
 
 	if len(os.Args) > 1 {
@@ -165,6 +183,9 @@ func main() {
 			if arg == "-token-file" && i+1 < len(os.Args) {
 				tokenFile = os.Args[i+1]
 			}
+			if arg == "-device-code-file" && i+1 < len(os.Args) {
+				deviceCodeFile = os.Args[i+1]
+			}
 			if arg == "-cli-only" {
 				cliOnly = true
 				fmt.Println("Running in CLI-only mode. No web server will be started.")
@@ -172,17 +193,30 @@ func main() {
 		}
 	}
 
-	// Initialize token cache with persistent storage
+	// Initialize token cache with persistent storage (for current session only)
 	tokenCache = NewTokenCache(tokenFile)
 	log.Printf("Using token storage file: %s", tokenFile)
 
+	// Load device code from file if it exists
+	var err error
+	deviceCodeStorage, err = LoadDeviceCodeFromFile(deviceCodeFile)
+	if err == nil && IsDeviceCodeValid(deviceCodeStorage) {
+		log.Printf("Loaded valid device code from %s", deviceCodeFile)
+	} else {
+		log.Printf("No valid device code found or error loading from %s", deviceCodeFile)
+		deviceCodeStorage = DeviceCodeStorage{}
+	}
+
 	// Check if we have any valid tokens in the cache and output them
 	validTokenFound := false
+	var validAccessToken string
+
 	tokenCache.mu.Lock()
 	for accessToken, token := range tokenCache.cache {
 		// Check if the token is still valid
 		if time.Until(time.Unix(token.Expiry, 0)) > tokenExpiryBuffer {
 			validTokenFound = true
+			validAccessToken = accessToken
 			log.Printf("Found valid access token: %s", accessToken)
 			log.Printf("You can use this as 'Authorization: Bearer %s' for /chat/completions", accessToken)
 
@@ -192,17 +226,87 @@ func main() {
 				log.Printf("Verified token is valid with GitHub Copilot API")
 
 				if !cliOnly {
-					// Update the token in the cache with the latest expiry
-					tokenCache.Set(accessToken, ct)
+					// Update the token in the cache with the latest expiry in a separate goroutine
+					go func(accessToken string, copilotToken CopilotToken) {
+						tokenCache.Set(accessToken, copilotToken)
+					}(accessToken, ct)
 				}
 			} else {
 				log.Printf("Warning: Could not verify token with GitHub Copilot API: %v", err)
 			}
 		}
-		fmt.Println("HONK")
-		break
 	}
 	tokenCache.mu.Unlock()
+
+	// If we have a valid token but no valid device code, try to obtain a device code
+	if validTokenFound && !IsDeviceCodeValid(deviceCodeStorage) && !cliOnly {
+		log.Println("Valid token found but no valid device code. Attempting to obtain device code.")
+
+		// Request a new device code
+		dc, err := requestDeviceCode()
+		if err == nil {
+			// Store the device code
+			deviceCodeStorage = DeviceCodeStorage{
+				DeviceCode:      dc.DeviceCode,
+				UserCode:        dc.UserCode,
+				VerificationURI: dc.VerificationURI,
+				Interval:        dc.Interval,
+				CreatedAt:       time.Now().Unix(),
+			}
+
+			// Save the device code to file
+			if deviceCodeFile != "" {
+				if err := SaveDeviceCodeToFile(deviceCodeFile, deviceCodeStorage); err != nil {
+					log.Printf("Failed to save device code to file: %v", err)
+				} else {
+					log.Printf("Saved device code to %s for future use", deviceCodeFile)
+				}
+			}
+
+			log.Printf("Device code obtained. User code: %s, Verification URI: %s",
+				dc.UserCode, dc.VerificationURI)
+			log.Printf("Please visit %s and enter code %s to authenticate this device",
+				dc.VerificationURI, dc.UserCode)
+
+			// Start polling for access token in the background
+			go func() {
+				ticker := time.NewTicker(time.Duration(dc.Interval) * time.Second)
+				defer ticker.Stop()
+
+				timeout := time.After(10 * time.Minute)
+
+				for {
+					select {
+					case <-timeout:
+						log.Println("Timed out waiting for device code authentication")
+						return
+					case <-ticker.C:
+						at, err := pollAccessToken(dc.DeviceCode)
+						if err == nil && at.AccessToken != "" {
+							log.Println("Successfully authenticated with device code")
+
+							// If the access token is different from the one we already have,
+							// fetch a new Copilot token and store it
+							if at.AccessToken != validAccessToken {
+								ct, err := fetchCopilotToken(at.AccessToken)
+								if err == nil {
+									// Store the token in the cache in a separate goroutine
+									go func(accessToken string, copilotToken CopilotToken) {
+										tokenCache.Set(accessToken, copilotToken)
+										log.Printf("New access token obtained and stored")
+									}(at.AccessToken, ct)
+								}
+							}
+
+							return
+						}
+					}
+				}
+			}()
+		} else {
+			log.Printf("Failed to request device code: %v", err)
+		}
+	}
 
 	if !validTokenFound {
 		log.Printf("No valid tokens found in cache. Please authenticate via the web interface.")
@@ -219,7 +323,6 @@ func main() {
 		os.Exit(0)
 	}
 
-	// Only start the web server if not in CLI-only mode or if no valid tokens were found
 	http.HandleFunc("/", handleIndex)
 	http.HandleFunc("/login", handleLogin)
 	http.HandleFunc("/ws/poll", handleWebsocketPoll)
