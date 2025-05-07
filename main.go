@@ -170,10 +170,13 @@ const defaultDeviceCodeFile = "device_code.json"
 var deviceCodeStorage DeviceCodeStorage
 
 func main() {
+	// Ensure logs go to stderr
+	log.SetOutput(os.Stderr)
+
 	listenAddr := "127.0.0.1:8080"
 	tokenFile := defaultTokenFile
 	deviceCodeFile := defaultDeviceCodeFile
-	cliOnly := false
+	tokenOnly := false
 
 	if len(os.Args) > 1 {
 		for i, arg := range os.Args {
@@ -186,9 +189,9 @@ func main() {
 			if arg == "-device-code-file" && i+1 < len(os.Args) {
 				deviceCodeFile = os.Args[i+1]
 			}
-			if arg == "-cli-only" {
-				cliOnly = true
-				fmt.Println("Running in CLI-only mode. No web server will be started.")
+			if arg == "-token-only" {
+				tokenOnly = true
+				log.Println("Running in CLI-only mode. No web server will be started.")
 			}
 		}
 	}
@@ -217,6 +220,7 @@ func main() {
 		if time.Until(time.Unix(token.Expiry, 0)) > tokenExpiryBuffer {
 			validTokenFound = true
 			validAccessToken = accessToken
+			fmt.Printf("%s\n", accessToken)
 			log.Printf("Found valid access token: %s", accessToken)
 			log.Printf("You can use this as 'Authorization: Bearer %s' for /chat/completions", accessToken)
 
@@ -225,7 +229,7 @@ func main() {
 			if err == nil {
 				log.Printf("Verified token is valid with GitHub Copilot API")
 
-				if !cliOnly {
+				if !tokenOnly {
 					// Update the token in the cache with the latest expiry in a separate goroutine
 					go func(accessToken string, copilotToken CopilotToken) {
 						tokenCache.Set(accessToken, copilotToken)
@@ -239,7 +243,7 @@ func main() {
 	tokenCache.mu.Unlock()
 
 	// If we have a valid token but no valid device code, try to obtain a device code
-	if validTokenFound && !IsDeviceCodeValid(deviceCodeStorage) && !cliOnly {
+	if validTokenFound && !IsDeviceCodeValid(deviceCodeStorage) && !tokenOnly {
 		log.Println("Valid token found but no valid device code. Attempting to obtain device code.")
 
 		// Request a new device code
@@ -311,24 +315,23 @@ func main() {
 	if !validTokenFound {
 		log.Printf("No valid tokens found in cache. Please authenticate via the web interface.")
 
-		if cliOnly {
-			log.Printf("To authenticate, run without the -cli-only flag and visit http://%s", listenAddr)
+		if tokenOnly {
+			log.Printf("To authenticate, run without the -token-only flag and visit http://%s", listenAddr)
 			os.Exit(1)
 		}
 	}
 
-	if cliOnly {
+	if tokenOnly {
 		// In CLI-only mode, exit after displaying the token
 		log.Printf("Token found and displayed. Exiting CLI-only mode.")
 		os.Exit(0)
+	} else {
+		http.HandleFunc("/", handleIndex)
+		http.HandleFunc("/login", handleLogin)
+		http.HandleFunc("/ws/poll", handleWebsocketPoll)
+		http.HandleFunc("/chat/completions", handleGitHubProxy)
+		http.HandleFunc("/models", handleGitHubProxy)
+		log.Printf("Listening at http://%s\n", listenAddr)
+		log.Fatal(http.ListenAndServe(listenAddr, nil))
 	}
-
-	http.HandleFunc("/", handleIndex)
-	http.HandleFunc("/login", handleLogin)
-	http.HandleFunc("/ws/poll", handleWebsocketPoll)
-	http.HandleFunc("/chat/completions", handleGitHubProxy)
-	http.HandleFunc("/models", handleGitHubProxy)
-	log.Printf("Listening at http://%s\n", listenAddr)
-	log.Fatal(http.ListenAndServe(listenAddr, nil))
-
 }
