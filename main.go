@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -154,6 +155,7 @@ const defaultTokenFile = "copilot_tokens.json"
 func main() {
 	listenAddr := "127.0.0.1:8080"
 	tokenFile := defaultTokenFile
+	cliOnly := false
 
 	if len(os.Args) > 1 {
 		for i, arg := range os.Args {
@@ -163,12 +165,61 @@ func main() {
 			if arg == "-token-file" && i+1 < len(os.Args) {
 				tokenFile = os.Args[i+1]
 			}
+			if arg == "-cli-only" {
+				cliOnly = true
+				fmt.Println("Running in CLI-only mode. No web server will be started.")
+			}
 		}
 	}
 
 	// Initialize token cache with persistent storage
 	tokenCache = NewTokenCache(tokenFile)
 	log.Printf("Using token storage file: %s", tokenFile)
+
+	// Check if we have any valid tokens in the cache and output them
+	validTokenFound := false
+	tokenCache.mu.Lock()
+	for accessToken, token := range tokenCache.cache {
+		// Check if the token is still valid
+		if time.Until(time.Unix(token.Expiry, 0)) > tokenExpiryBuffer {
+			validTokenFound = true
+			log.Printf("Found valid access token: %s", accessToken)
+			log.Printf("You can use this as 'Authorization: Bearer %s' for /chat/completions", accessToken)
+
+			// Try to fetch a Copilot token to verify it's still valid
+			ct, err := fetchCopilotToken(accessToken)
+			if err == nil {
+				log.Printf("Verified token is valid with GitHub Copilot API")
+
+				if !cliOnly {
+					// Update the token in the cache with the latest expiry
+					tokenCache.Set(accessToken, ct)
+				}
+			} else {
+				log.Printf("Warning: Could not verify token with GitHub Copilot API: %v", err)
+			}
+		}
+		fmt.Println("HONK")
+		break
+	}
+	tokenCache.mu.Unlock()
+
+	if !validTokenFound {
+		log.Printf("No valid tokens found in cache. Please authenticate via the web interface.")
+
+		if cliOnly {
+			log.Printf("To authenticate, run without the -cli-only flag and visit http://%s", listenAddr)
+			os.Exit(1)
+		}
+	}
+
+	if cliOnly {
+		// In CLI-only mode, exit after displaying the token
+		log.Printf("Token found and displayed. Exiting CLI-only mode.")
+		os.Exit(0)
+	}
+
+	// Only start the web server if not in CLI-only mode or if no valid tokens were found
 	http.HandleFunc("/", handleIndex)
 	http.HandleFunc("/login", handleLogin)
 	http.HandleFunc("/ws/poll", handleWebsocketPoll)
@@ -176,4 +227,5 @@ func main() {
 	http.HandleFunc("/models", handleGitHubProxy)
 	log.Printf("Listening at http://%s\n", listenAddr)
 	log.Fatal(http.ListenAndServe(listenAddr, nil))
+
 }
