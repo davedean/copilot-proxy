@@ -61,6 +61,17 @@
         let res = await fetch("/login");
         let data = await res.json();
         console.log(data)
+        
+        // Check if we got a cached access token
+        if (data.access_token && data.cached) {
+          console.log("Using cached token");
+          document.getElementById("start").style.display = "none";
+          document.getElementById("done").style.display = "block";
+          document.getElementById("token").textContent = data.access_token;
+          return;
+        }
+        
+        // Otherwise, proceed with device code flow
         deviceCode = data.device_code;
         interval = data.interval;
         document.getElementById("verifyUri").href = data.verification_uri;

@@ -18,6 +18,34 @@ import (
 var content embed.FS
 
 func handleLogin(w http.ResponseWriter, r *http.Request) {
+	// Check if we have any valid tokens in the cache
+	validToken := false
+	var accessToken string
+
+	// Iterate through the token cache to find a valid token
+	tokenCache.mu.Lock()
+	for key, token := range tokenCache.cache {
+		// Check if the token is still valid
+		if time.Until(time.Unix(token.Expiry, 0)) > tokenExpiryBuffer {
+			validToken = true
+			accessToken = key
+			break
+		}
+	}
+	tokenCache.mu.Unlock()
+
+	if validToken {
+		// We have a valid token, return it directly
+		log.Println("Using existing valid token from cache")
+		json.NewEncoder(w).Encode(map[string]string{
+			"access_token": accessToken,
+			"cached":       "true",
+		})
+		return
+	}
+
+	// No valid token found, proceed with device code flow
+	log.Println("No valid token found, requesting new device code")
 	dc, err := requestDeviceCode()
 	if err != nil {
 		http.Error(w, "Failed to get device code", http.StatusInternalServerError)
