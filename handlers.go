@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"copilot-proxy/unstream"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -13,7 +15,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"unstream"
 )
 
 //go:embed public/*
@@ -154,7 +155,6 @@ func handleGitHubProxy(w http.ResponseWriter, r *http.Request) {
 
 		// Collect the stream and convert to non-streaming response
 		collector := unstream.NewOAIStreamCollector()
-		decoder := json.NewDecoder(resp.Body)
 		scanner := bufio.NewScanner(resp.Body)
 		for scanner.Scan() {
 			line := scanner.Text()
