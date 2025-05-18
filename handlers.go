@@ -71,6 +71,39 @@ func handleWebsocketPoll(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func copyRequestHeaders(dst *http.Request, src *http.Request, token string) {
+	// Copy all headers except Host and Authorization
+	for k, v := range src.Header {
+		if k == "Host" || k == "Authorization" {
+			continue
+		}
+		for _, vv := range v {
+			dst.Header.Add(k, vv)
+		}
+	}
+	dst.Header.Set("Authorization", "Bearer "+token)
+	dst.Header.Set("x-request-id", uuid.New().String())
+	dst.Header.Set("vscode-sessionid", src.Header.Get("vscode-sessionid"))
+	dst.Header.Set("machineid", src.Header.Get("machineid"))
+	dst.Header.Set("editor-version", "vscode/1.85.1")
+	dst.Header.Set("editor-plugin-version", "copilot-chat/0.12.2023120701")
+	dst.Header.Set("openai-organization", "github-copilot")
+	dst.Header.Set("openai-intent", "conversation-panel")
+	dst.Header.Set("content-type", "application/json")
+	dst.Header.Set("user-agent", "GitHubCopilotChat/0.12.2023120701")
+}
+
+func copyResponseHeaders(dst http.ResponseWriter, src *http.Response, skip map[string]struct{}) {
+	for k, v := range src.Header {
+		if _, found := skip[k]; found {
+			continue
+		}
+		for _, vv := range v {
+			dst.Header().Add(k, vv)
+		}
+	}
+}
+
 func handleGitHubProxy(w http.ResponseWriter, r *http.Request) {
 	log.Println("Forwarding GitHub Copilot Request")
 	auth := r.Header.Get("Authorization")
@@ -127,25 +160,7 @@ func handleGitHubProxy(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Failed to create request", http.StatusInternalServerError)
 			return
 		}
-		// Copy all headers except Host and Authorization
-		for k, v := range r.Header {
-			if k == "Host" || k == "Authorization" {
-				continue
-			}
-			for _, vv := range v {
-				proxyReq.Header.Add(k, vv)
-			}
-		}
-		proxyReq.Header.Set("Authorization", "Bearer "+ct.Token)
-		proxyReq.Header.Set("x-request-id", uuid.New().String())
-		proxyReq.Header.Set("vscode-sessionid", r.Header.Get("vscode-sessionid"))
-		proxyReq.Header.Set("machineid", r.Header.Get("machineid"))
-		proxyReq.Header.Set("editor-version", "vscode/1.85.1")
-		proxyReq.Header.Set("editor-plugin-version", "copilot-chat/0.12.2023120701")
-		proxyReq.Header.Set("openai-organization", "github-copilot")
-		proxyReq.Header.Set("openai-intent", "conversation-panel")
-		proxyReq.Header.Set("content-type", "application/json")
-		proxyReq.Header.Set("user-agent", "GitHubCopilotChat/0.12.2023120701")
+		copyRequestHeaders(proxyReq, r, ct.Token)
 		resp, err := http.DefaultClient.Do(proxyReq)
 		if err != nil {
 			http.Error(w, "Upstream error", http.StatusBadGateway)
@@ -173,14 +188,7 @@ func handleGitHubProxy(w http.ResponseWriter, r *http.Request) {
 		}
 		final := collector.BuildResponse()
 		// Copy all headers except for Transfer-Encoding (since we're not streaming)
-		for k, v := range resp.Header {
-			if k == "Transfer-Encoding" {
-				continue
-			}
-			for _, vv := range v {
-				w.Header().Add(k, vv)
-			}
-		}
+		copyResponseHeaders(w, resp, map[string]struct{}{"Transfer-Encoding": {}})
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(resp.StatusCode)
 		json.NewEncoder(w).Encode(final)
@@ -194,25 +202,7 @@ func handleGitHubProxy(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to create request", http.StatusInternalServerError)
 		return
 	}
-	// Copy all headers except Host and Authorization
-	for k, v := range r.Header {
-		if k == "Host" || k == "Authorization" {
-			continue
-		}
-		for _, vv := range v {
-			req.Header.Add(k, vv)
-		}
-	}
-	req.Header.Set("Authorization", "Bearer "+ct.Token)
-	req.Header.Set("x-request-id", uuid.New().String())
-	req.Header.Set("vscode-sessionid", r.Header.Get("vscode-sessionid"))
-	req.Header.Set("machineid", r.Header.Get("machineid"))
-	req.Header.Set("editor-version", "vscode/1.85.1")
-	req.Header.Set("editor-plugin-version", "copilot-chat/0.12.2023120701")
-	req.Header.Set("openai-organization", "github-copilot")
-	req.Header.Set("openai-intent", "conversation-panel")
-	req.Header.Set("content-type", "application/json")
-	req.Header.Set("user-agent", "GitHubCopilotChat/0.12.2023120701")
+	copyRequestHeaders(req, r, ct.Token)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		http.Error(w, "Upstream error", http.StatusBadGateway)
@@ -221,11 +211,7 @@ func handleGitHubProxy(w http.ResponseWriter, r *http.Request) {
 	defer resp.Body.Close()
 
 	// Copy all headers
-	for k, v := range resp.Header {
-		for _, vv := range v {
-			w.Header().Add(k, vv)
-		}
-	}
+	copyResponseHeaders(w, resp, nil)
 	w.WriteHeader(resp.StatusCode)
 	io.Copy(w, resp.Body)
 	log.Println("Copilot Request Completed")
