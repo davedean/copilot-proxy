@@ -148,7 +148,7 @@ func handleGitHubProxy(w http.ResponseWriter, r *http.Request) {
 		// Special handling: force streaming, collect, then return as non-stream
 		log.Println("Special handling: gpt-4.1 non-streaming request, using unstream/conversion.go")
 		// Clone the request, but set stream=true
-		var m map[string]interface{}
+		var m map[string]any
 		if err := json.Unmarshal(bodyBytes, &m); err != nil {
 			http.Error(w, "Invalid JSON", http.StatusBadRequest)
 			return
