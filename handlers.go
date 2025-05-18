@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -88,6 +89,10 @@ func handleGitHubProxy(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		tokenCache.Set(accessToken, ct)
+	}
+
+	if strings.HasPrefix(r.URL.Path, "/v1") {
+		r.URL.Path = strings.TrimPrefix(r.URL.Path, "/v1")
 	}
 
 	// Forward the request to the Copilot API

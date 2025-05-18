@@ -106,11 +106,13 @@ func (tc *TokenCache) cleanup() {
 	tc.scheduleCleanup()
 }
 
-var upgrader = websocket.Upgrader{}
-var tokenCache = NewTokenCache()
+var (
+	upgrader   = websocket.Upgrader{}
+	tokenCache = NewTokenCache()
+)
 
 func main() {
-	listenAddr := "127.0.0.1:8080"
+	listenAddr := "127.0.0.1:8090"
 	if len(os.Args) > 1 {
 		for i, arg := range os.Args {
 			if arg == "-listen" && i+1 < len(os.Args) {
@@ -123,6 +125,8 @@ func main() {
 	http.HandleFunc("/ws/poll", handleWebsocketPoll)
 	http.HandleFunc("/chat/completions", handleGitHubProxy)
 	http.HandleFunc("/models", handleGitHubProxy)
+	http.HandleFunc("/v1/chat/completions", handleGitHubProxy)
+	http.HandleFunc("/v1/models", handleGitHubProxy)
 	log.Printf("Listening at http://%s\n", listenAddr)
 	log.Fatal(http.ListenAndServe(listenAddr, nil))
 }
