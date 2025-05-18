@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"unstream"
 )
 
 //go:embed public/*
@@ -95,8 +96,100 @@ func handleGitHubProxy(w http.ResponseWriter, r *http.Request) {
 		r.URL.Path = strings.TrimPrefix(r.URL.Path, "/v1")
 	}
 
-	// Forward the request to the Copilot API
-	req, err := http.NewRequest(r.Method, fmt.Sprintf("https://api.githubcopilot.com%s", r.URL.Path), r.Body)
+	// Read the request body for inspection (for model/stream detection)
+	var bodyBytes []byte
+	if r.Body != nil {
+		bodyBytes, _ = io.ReadAll(r.Body)
+	}
+	r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+
+	// Detect if this is a non-streaming gpt-4.1 request
+	var reqBody struct {
+		Stream bool   `json:"stream"`
+		Model  string `json:"model"`
+	}
+	_ = json.Unmarshal(bodyBytes, &reqBody)
+	isGpt41 := strings.HasPrefix(reqBody.Model, "gpt-4.1")
+	if isGpt41 && !reqBody.Stream {
+		// Special handling: force streaming, collect, then return as non-stream
+		log.Println("Special handling: gpt-4.1 non-streaming request, using unstream/conversion.go")
+		// Clone the request, but set stream=true
+		var m map[string]interface{}
+		if err := json.Unmarshal(bodyBytes, &m); err != nil {
+			http.Error(w, "Invalid JSON", http.StatusBadRequest)
+			return
+		}
+		m["stream"] = true
+		newBody, _ := json.Marshal(m)
+		proxyReq, err := http.NewRequest(r.Method, fmt.Sprintf("https://api.githubcopilot.com%s", r.URL.Path), bytes.NewReader(newBody))
+		if err != nil {
+			http.Error(w, "Failed to create request", http.StatusInternalServerError)
+			return
+		}
+		// Copy all headers except Host and Authorization
+		for k, v := range r.Header {
+			if k == "Host" || k == "Authorization" {
+				continue
+			}
+			for _, vv := range v {
+				proxyReq.Header.Add(k, vv)
+			}
+		}
+		proxyReq.Header.Set("Authorization", "Bearer "+ct.Token)
+		proxyReq.Header.Set("x-request-id", uuid.New().String())
+		proxyReq.Header.Set("vscode-sessionid", r.Header.Get("vscode-sessionid"))
+		proxyReq.Header.Set("machineid", r.Header.Get("machineid"))
+		proxyReq.Header.Set("editor-version", "vscode/1.85.1")
+		proxyReq.Header.Set("editor-plugin-version", "copilot-chat/0.12.2023120701")
+		proxyReq.Header.Set("openai-organization", "github-copilot")
+		proxyReq.Header.Set("openai-intent", "conversation-panel")
+		proxyReq.Header.Set("content-type", "application/json")
+		proxyReq.Header.Set("user-agent", "GitHubCopilotChat/0.12.2023120701")
+		resp, err := http.DefaultClient.Do(proxyReq)
+		if err != nil {
+			http.Error(w, "Upstream error", http.StatusBadGateway)
+			return
+		}
+		defer resp.Body.Close()
+
+		// Collect the stream and convert to non-streaming response
+		collector := unstream.NewOAIStreamCollector()
+		decoder := json.NewDecoder(resp.Body)
+		scanner := bufio.NewScanner(resp.Body)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if !strings.HasPrefix(line, "data: ") {
+				continue
+			}
+			payload := strings.TrimPrefix(line, "data: ")
+			if payload == "[DONE]" {
+				break
+			}
+			var chunk unstream.OAIStreamChunk
+			if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+				continue
+			}
+			collector.AddChunk(&chunk)
+		}
+		final := collector.BuildResponse()
+		// Copy all headers except for Transfer-Encoding (since we're not streaming)
+		for k, v := range resp.Header {
+			if k == "Transfer-Encoding" {
+				continue
+			}
+			for _, vv := range v {
+				w.Header().Add(k, vv)
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(resp.StatusCode)
+		json.NewEncoder(w).Encode(final)
+		log.Println("Copilot Request Completed (non-stream gpt-4.1)")
+		return
+	}
+
+	// Normal proxy behavior
+	req, err := http.NewRequest(r.Method, fmt.Sprintf("https://api.githubcopilot.com%s", r.URL.Path), bytes.NewReader(bodyBytes))
 	if err != nil {
 		http.Error(w, "Failed to create request", http.StatusInternalServerError)
 		return
