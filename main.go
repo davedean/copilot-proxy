@@ -127,7 +127,7 @@ func main() {
 	http.HandleFunc("/models", handleGitHubProxy)
 	http.HandleFunc("/v1/chat/completions", handleGitHubProxy)
 	http.HandleFunc("/v1/models", handleGitHubProxy)
-	http.HandleFunc("/embeddings", handleGitHubProxy) // Added new endpoint
+	http.HandleFunc("/embeddings", handleGitHubProxy)
 	log.Printf("Listening at http://%s\n", listenAddr)
 	log.Fatal(http.ListenAndServe(listenAddr, nil))
 }
