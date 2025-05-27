@@ -108,7 +108,7 @@ func handleGitHubProxy(w http.ResponseWriter, r *http.Request) {
 	log.Println("Forwarding GitHub Copilot Request")
 	auth := r.Header.Get("Authorization")
 	if len(auth) < 8 || auth[:7] != "Bearer " {
-		log.Println("403: Missing Authoirzation header")
+		log.Println("403: Missing Authorization header")
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -126,25 +126,50 @@ func handleGitHubProxy(w http.ResponseWriter, r *http.Request) {
 		tokenCache.Set(accessToken, ct)
 	}
 
+	// Handle /v1 prefix for compatibility
 	if strings.HasPrefix(r.URL.Path, "/v1") {
 		r.URL.Path = strings.TrimPrefix(r.URL.Path, "/v1")
 	}
 
-	// Read the request body for inspection (for model/stream detection)
+	// Read the request body
 	var bodyBytes []byte
 	if r.Body != nil {
 		bodyBytes, _ = io.ReadAll(r.Body)
 	}
 	r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 
-	// Detect if this is a non-streaming gpt-4.1 request
+	// Check if the request is for /embeddings
+	if r.URL.Path == "/embeddings" {
+		log.Println("Handling embeddings request")
+		req, err := http.NewRequest(r.Method, "https://api.githubcopilot.com/embeddings", bytes.NewReader(bodyBytes))
+		if err != nil {
+			http.Error(w, "Failed to create request", http.StatusInternalServerError)
+			return
+		}
+		copyRequestHeaders(req, r, ct.Token)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			http.Error(w, "Upstream error", http.StatusBadGateway)
+			return
+		}
+		defer resp.Body.Close()
+
+		// Copy response headers and body
+		copyResponseHeaders(w, resp, nil)
+		w.WriteHeader(resp.StatusCode)
+		io.Copy(w, resp.Body)
+		log.Println("Embeddings Request Completed")
+		return
+	}
+
+	// Detect if this is a non-streaming gpt-4.1 request for chat/completions
 	var reqBody struct {
 		Stream bool   `json:"stream"`
 		Model  string `json:"model"`
 	}
 	_ = json.Unmarshal(bodyBytes, &reqBody)
 	isGpt41 := strings.HasPrefix(reqBody.Model, "gpt-4.1")
-	if isGpt41 && !reqBody.Stream {
+	if r.URL.Path == "/chat/completions" && isGpt41 && !reqBody.Stream {
 		// Special handling: force streaming, collect, then return as non-stream
 		log.Println("Special handling: gpt-4.1 non-streaming request, using unstream/conversion.go")
 		// Clone the request, but set stream=true
@@ -196,7 +221,7 @@ func handleGitHubProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Normal proxy behavior
+	// Normal proxy behavior for other endpoints
 	req, err := http.NewRequest(r.Method, fmt.Sprintf("https://api.githubcopilot.com%s", r.URL.Path), bytes.NewReader(bodyBytes))
 	if err != nil {
 		http.Error(w, "Failed to create request", http.StatusInternalServerError)
